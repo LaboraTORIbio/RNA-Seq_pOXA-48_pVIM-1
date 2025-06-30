@@ -1,0 +1,344 @@
+---
+title: "Gene Set Enrichment Analysis (GSEA)"
+author: "Laura Toribio-Celestino"
+date: "May 2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, results='hide', eval=TRUE, message=FALSE, warning=FALSE}
+library(clusterProfiler)
+library(enrichplot)
+library(ggplot2)
+library(stringr)
+library(scales)
+library(tidyr)
+library(dplyr)
+library(svglite)
+```
+
+A random seed is set to obtain reproducible results when running GSEA.
+
+```{r, eval=TRUE}
+set.seed(12345)
+```
+
+
+# GSEA
+
+Gene lists, annotation files (TERM2GENE and TERM2NAME, separated by GO aspect), and ranking of gene lists based of log2FC will be loaded for each strain and experimental comparison. GSEA is run with clusterProfiler with default parameters, except for 'seed' that is set to TRUE for reproducibility. Note that correction for multiple tests is performed with the Benjamini-Hochberg procedure.
+
+```{r, eval=TRUE}
+strains <- c("K25", "K147", "K163", "K198", "K318", "KPN06", "KPN11", "KPN12")
+comps <- c("pOXA-48-vs-PF", "pVIM-1-vs-PF", "pVIM-1-vs-pOXA-48")
+
+geneLists <- list()
+GSEA_results <- list()
+summary_list <- list()
+
+for (strain in strains) {
+  # Load TERM2GENE files:
+  t2g_BP <- read.table(paste0("TERM2GENE/TERM2GENE_", strain, "_chr_BP.tsv"), sep = "\t", header = FALSE)
+  t2g_MF <- read.table(paste0("TERM2GENE/TERM2GENE_", strain, "_chr_MF.tsv"), sep = "\t", header = FALSE)
+  t2g_CC <- read.table(paste0("TERM2GENE/TERM2GENE_", strain, "_chr_CC.tsv"), sep = "\t", header = FALSE)
+  # Load TERM2NAME files:
+  t2n_BP <- read.table(paste0("TERM2NAME/", strain, "_chromosome_BP.tsv"), sep = "\t", header = FALSE, quote = "")
+  t2n_MF <- read.table(paste0("TERM2NAME/", strain, "_chromosome_MF.tsv"), sep = "\t", header = FALSE, quote = "")
+  t2n_CC <- read.table(paste0("TERM2NAME/", strain, "_chromosome_CC.tsv"), sep = "\t", header = FALSE, quote = "")
+
+  for (comp in comps) {
+    # Load gene list:
+    file_path <- paste0("geneLists/", strain, "_", comp, "_chromosome.tsv")
+    geneList <- with(read.table(file_path, sep = "\t", header = FALSE),
+                     setNames(V2, as.character(V1)))
+    geneList <- sort(geneList, decreasing = TRUE)
+
+    # Store gene list:
+    geneLists[[paste(strain, comp, sep = "_")]] <- geneList
+
+    # GSEA by GO aspect:
+    key <- paste(strain, comp, sep = "_")
+    GSEA_results[[key]] <- list(
+      BP = GSEA(geneList, TERM2GENE = t2g_BP, TERM2NAME = t2n_BP, seed = TRUE),
+      MF = GSEA(geneList, TERM2GENE = t2g_MF, TERM2NAME = t2n_MF, seed = TRUE),
+      CC = GSEA(geneList, TERM2GENE = t2g_CC, TERM2NAME = t2n_CC, seed = TRUE)
+    )
+    
+    # Collect results:
+    summary_list[[paste(strain, comp, sep = "_")]] <- c(
+      BP = nrow(as.data.frame(GSEA_results[[key]]$BP)),
+      MF = nrow(as.data.frame(GSEA_results[[key]]$MF)),
+      CC = nrow(as.data.frame(GSEA_results[[key]]$CC))
+    )
+  }
+}
+```
+
+Number of enriched GO terms by GO aspect:
+
+```{r, eval=TRUE}
+for (strain_comp in names(summary_list)) {
+  res <- summary_list[[strain_comp]]
+  cat(sprintf("%s  -->  BP: %d | MF: %d | CC: %d\n", strain_comp, res["BP"], res["MF"], res["CC"]))
+}
+```
+
+
+# Comparing GSEA results from chromosomes between species
+
+First, GSEA results are converted to dataframes, and columns `count` (calculated by counting the number of underscores in `core_enrichment`, as all gene names contain an underscore, e.g. FCMADI_02050) and `geneRatio` (calculated as count/setSize) are added:
+
+```{r, eval=TRUE}
+processed_GSEA_results <- list()
+
+for (strain_comp in names(GSEA_results)) {
+  # Biological Process (BP)
+  if (!is.null(GSEA_results[[strain_comp]]$BP)) {
+    GSEA_BP <- as.data.frame(GSEA_results[[strain_comp]]$BP)
+    GSEA_BP$count <- str_count(GSEA_BP$core_enrichment, "_")
+    GSEA_BP$geneRatio <- GSEA_BP$count / GSEA_BP$setSize
+    processed_GSEA_results[[paste(strain_comp, "BP", sep = "_")]] <- GSEA_BP
+  }
+  # Molecular Function (MF)
+  if (!is.null(GSEA_results[[strain_comp]]$MF)) {
+    GSEA_MF <- as.data.frame(GSEA_results[[strain_comp]]$MF)
+    GSEA_MF$count <- str_count(GSEA_MF$core_enrichment, "_")
+    GSEA_MF$geneRatio <- GSEA_MF$count / GSEA_MF$setSize
+    processed_GSEA_results[[paste(strain_comp, "MF", sep = "_")]] <- GSEA_MF
+  }
+  # Cellular Component (CC)
+  if (!is.null(GSEA_results[[strain_comp]]$CC)) {
+    GSEA_CC <- as.data.frame(GSEA_results[[strain_comp]]$CC)
+    GSEA_CC$count <- str_count(GSEA_CC$core_enrichment, "_")
+    GSEA_CC$geneRatio <- GSEA_CC$count / GSEA_CC$setSize
+    processed_GSEA_results[[paste(strain_comp, "CC", sep = "_")]] <- GSEA_CC
+  }
+}
+```
+
+Next, non-empty dataframes are merged by GO aspect, adding a `strain_comp` column to indicate the strain and experimental comparison:
+
+```{r, eval=TRUE}
+GSEA_df_BP <- list()
+GSEA_df_MF <- list()
+GSEA_df_CC <- list()
+
+for (strain_comp in names(processed_GSEA_results)) {
+  # Biological Process (BP)
+  if (grepl("BP", strain_comp)) {
+    df_BP <- processed_GSEA_results[[strain_comp]]
+    if (nrow(df_BP) > 0) {
+      df_BP$strain_comp <- strain_comp
+      GSEA_df_BP[[strain_comp]] <- df_BP
+    }
+  }
+  # Molecular Function (MF)
+  if (grepl("MF", strain_comp)) {
+    df_MF <- processed_GSEA_results[[strain_comp]]
+    if (nrow(df_MF) > 0) {
+      df_MF$strain_comp <- strain_comp
+      GSEA_df_MF[[strain_comp]] <- df_MF
+    }
+  }
+  # Cellular Component (CC)
+  if (grepl("CC", strain_comp)) {
+    df_CC <- processed_GSEA_results[[strain_comp]]
+    if (nrow(df_CC) > 0) {
+      df_CC$strain_comp <- strain_comp
+      GSEA_df_CC[[strain_comp]] <- df_CC
+    }
+  }
+}
+
+# Merge all the dataframes:
+merged_BP <- do.call(rbind, GSEA_df_BP)
+rownames(merged_BP) <- NULL
+merged_MF <- do.call(rbind, GSEA_df_MF)
+rownames(merged_MF) <- NULL
+merged_CC <- do.call(rbind, GSEA_df_CC)
+rownames(merged_CC) <- NULL
+head(merged_BP)
+head(merged_MF)
+head(merged_CC)
+```
+
+
+# Dotplots of GSEA results
+
+```{r, eval=TRUE}
+# Get the GO IDs to find parental terms in QuickGO,
+# which will be used to order the GO descriptions in the following dotplots
+print("Biological Processes")
+cat(noquote(unique(merged_BP$ID)), sep="\n")
+print("Molecular Functions")
+cat(noquote(unique(merged_MF$ID)), sep="\n")
+print("Cellular Components")
+cat(noquote(unique(merged_CC$ID)), sep="\n")
+```
+
+### Biological Processes
+
+```{r, eval=TRUE}
+#strain_order_BP <- c("K147_pOXA-48-vs-PF_BP", "K147_pVIM-1-vs-PF_BP", "K147_pVIM-1-vs-pOXA-48_BP",
+#                     "K25_pOXA-48-vs-PF_BP", "K25_pVIM-1-vs-PF_BP", "K25_pVIM-1-vs-pOXA-48_BP",
+#                     "KPN06_pOXA-48-vs-PF_BP", "KPN06_pVIM-1-vs-PF_BP", "KPN06_pVIM-1-vs-pOXA-48_BP",
+#                     "K163_pOXA-48-vs-PF_BP", "K163_pVIM-1-vs-PF_BP", "K163_pVIM-1-vs-pOXA-48_BP",
+#                     "K198_pOXA-48-vs-PF_BP", "K198_pVIM-1-vs-PF_BP", "K198_pVIM-1-vs-pOXA-48_BP",
+#                     "K318_pOXA-48-vs-PF_BP", "K318_pVIM-1-vs-PF_BP", "K318_pVIM-1-vs-pOXA-48_BP",
+#                     "KPN11_pOXA-48-vs-PF_BP", "KPN11_pVIM-1-vs-PF_BP", "KPN11_pVIM-1-vs-pOXA-48_BP",
+#                     "KPN12_pOXA-48-vs-PF_BP", "KPN12_pVIM-1-vs-PF_BP", "KPN12_pVIM-1-vs-pOXA-48_BP"
+#                     )
+
+strain_order_BP <- c("K147_pOXA-48-vs-PF_BP", "K25_pOXA-48-vs-PF_BP", "KPN06_pOXA-48-vs-PF_BP", "K163_pOXA-48-vs-PF_BP", "K198_pOXA-48-vs-PF_BP", "K318_pOXA-48-vs-PF_BP", "KPN11_pOXA-48-vs-PF_BP", "KPN12_pOXA-48-vs-PF_BP", 
+                     "K147_pVIM-1-vs-PF_BP", "K25_pVIM-1-vs-PF_BP", "KPN06_pVIM-1-vs-PF_BP", "K163_pVIM-1-vs-PF_BP", "K198_pVIM-1-vs-PF_BP", "K318_pVIM-1-vs-PF_BP", "KPN11_pVIM-1-vs-PF_BP", "KPN12_pVIM-1-vs-PF_BP", 
+                     "K147_pVIM-1-vs-pOXA-48_BP", "K25_pVIM-1-vs-pOXA-48_BP", "KPN06_pVIM-1-vs-pOXA-48_BP", "K163_pVIM-1-vs-pOXA-48_BP", "K198_pVIM-1-vs-pOXA-48_BP", "K318_pVIM-1-vs-pOXA-48_BP", "KPN11_pVIM-1-vs-pOXA-48_BP", "KPN12_pVIM-1-vs-pOXA-48_BP"
+                     )
+
+GO_order_BP <- c("glycolytic process", "tricarboxylic acid cycle", "anaerobic respiration", "lipopolysaccharide biosynthetic process", "lipid A biosynthetic process", "cobalamin biosynthetic process", "methionine biosynthetic process", "isoleucine biosynthetic process", "lysine biosynthetic process via diaminopimelate", "'de novo' IMP biosynthetic process", "glycerol catabolic process", "proteolysis", "nitrate assimilation", "protein folding", "chaperone-mediated protein folding", "translation", "DNA replication", "DNA transposition", "DNA integration", "cell wall organization", "Gram-negative-bacterium-type cell outer membrane assembly", "peptidoglycan biosynthetic process", "protein secretion by the type II secretion system", "protein transport", "amino acid transport", "transmembrane transport", "phosphoenolpyruvate-dependent sugar phosphotransferase system", "response to antibiotic", "SOS response", "cell adhesion involved in single-species biofilm formation", "regulation of cell shape", "cell division")
+
+merged_BP <- merged_BP %>%
+  mutate(strain_comp = factor(strain_comp, levels = strain_order_BP),
+         Description = factor(Description, levels = GO_order_BP)) %>%
+  complete(strain_comp, Description)
+
+merged_BP <- merged_BP %>%
+  mutate(NES_dir = ifelse(is.na(NES), FALSE, NES > 0))
+
+
+plot_BP <- ggplot(merged_BP, aes(x = strain_comp, y = Description)) +
+  geom_point(aes(color = as.numeric(p.adjust),
+                 size = ifelse(as.numeric(geneRatio) == 0, NA, as.numeric(geneRatio)))) +
+  scale_color_gradient(name = "p.adjust", limits=c(0,0.05)) +
+  scale_size_continuous(name = "Gene ratio",
+                        limits = c(min(merged_BP$geneRatio, na.rm= TRUE),
+                                   max(merged_BP$geneRatio, na.rm = TRUE)),
+                        breaks = seq(min(merged_BP$geneRatio, na.rm = TRUE),
+                                      max(merged_BP$geneRatio, na.rm = TRUE),
+                                      length.out=5),
+                        labels = label_number(accuracy=0.01)) +
+  scale_y_discrete(limits=rev) +
+  theme_bw() + theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1)) +
+  facet_grid(~NES_dir, scales="free_y", labeller=as_labeller(c(`FALSE`="Downregulated", `TRUE`="Upregulated")))
+
+plot_BP
+```
+
+### Molecular Functions
+
+```{r, eval=TRUE}
+#strain_order_MF <- c("K147_pOXA-48-vs-PF_MF", "K147_pVIM-1-vs-PF_MF", "K147_pVIM-1-vs-pOXA-48_MF",
+#                     "K25_pOXA-48-vs-PF_MF", "K25_pVIM-1-vs-PF_MF", "K25_pVIM-1-vs-pOXA-48_MF",
+#                     "KPN06_pOXA-48-vs-PF_MF", "KPN06_pVIM-1-vs-PF_MF", "KPN06_pVIM-1-vs-pOXA-48_MF",
+#                     "K163_pOXA-48-vs-PF_MF", "K163_pVIM-1-vs-PF_MF", "K163_pVIM-1-vs-pOXA-48_MF",
+#                     "K198_pOXA-48-vs-PF_MF", "K198_pVIM-1-vs-PF_MF", "K198_pVIM-1-vs-pOXA-48_MF",
+#                     "K318_pOXA-48-vs-PF_MF", "K318_pVIM-1-vs-PF_MF", "K318_pVIM-1-vs-pOXA-48_MF",
+#                     "KPN11_pOXA-48-vs-PF_MF", "KPN11_pVIM-1-vs-PF_MF", "KPN11_pVIM-1-vs-pOXA-48_MF",
+#                     "KPN12_pOXA-48-vs-PF_MF", "KPN12_pVIM-1-vs-PF_MF", "KPN12_pVIM-1-vs-pOXA-48_MF"
+#                     )
+
+strain_order_MF <- c("K147_pOXA-48-vs-PF_MF", "K25_pOXA-48-vs-PF_MF", "KPN06_pOXA-48-vs-PF_MF", "K163_pOXA-48-vs-PF_MF", "K198_pOXA-48-vs-PF_MF", "K318_pOXA-48-vs-PF_MF", "KPN11_pOXA-48-vs-PF_MF", "KPN12_pOXA-48-vs-PF_MF", 
+                     "K147_pVIM-1-vs-PF_MF", "K25_pVIM-1-vs-PF_MF", "KPN06_pVIM-1-vs-PF_MF", "K163_pVIM-1-vs-PF_MF", "K198_pVIM-1-vs-PF_MF", "K318_pVIM-1-vs-PF_MF", "KPN11_pVIM-1-vs-PF_MF", "KPN12_pVIM-1-vs-PF_MF", 
+                     "K147_pVIM-1-vs-pOXA-48_MF", "K25_pVIM-1-vs-pOXA-48_MF", "KPN06_pVIM-1-vs-pOXA-48_MF", "K163_pVIM-1-vs-pOXA-48_MF", "K198_pVIM-1-vs-pOXA-48_MF", "K318_pVIM-1-vs-pOXA-48_MF", "KPN11_pVIM-1-vs-pOXA-48_MF", "KPN12_pVIM-1-vs-pOXA-48_MF"
+                     )
+
+GO_order_MF <- c("transposase activity", "DNA clamp loader activity", "cohesin loader activity", "chromatin extrusion motor activity", "ATP-dependent H3-H4 histone complex chaperone activity", "ATP-dependent H2AZ histone chaperone activity", "methyltransferase activity", "acyltransferase activity", "kinase activity", "lyase activity", "NADH dehydrogenase (ubiquinone) activity", "protein-N(PI)-phosphohistidine-sugar phosphotransferase activity", "RNA polymerase II CTD heptapeptide repeat P3 isomerase activity", "RNA polymerase II CTD heptapeptide repeat P6 isomerase activity", "cyclic-guanylate-specific phosphodiesterase activity", "ATP hydrolysis activity", "ATP binding", "NAD binding", "nucleic acid binding", "DNA binding", "sequence-specific DNA binding", "RNA binding", "rRNA binding", "tRNA binding", "transcription cis-regulatory region binding", "translation elongation factor activity", "structural constituent of ribosome", "transmembrane transporter activity", "xenobiotic transmembrane transporter activity", "dipeptide transmembrane transporter activity", "symporter activity", "antiporter activity", "protein-phosphocysteine-sugar phosphotransferase activity", "metal ion binding", "ferrous iron binding", "4 iron, 4 sulfur cluster binding", "manganese ion binding", "unfolded protein binding", "quinone binding", "DNA-binding transcription factor activity", "ribosome binding", "carbohydrate binding", "molybdopterin cofactor binding")
+
+merged_MF <- merged_MF %>%
+  mutate(strain_comp = factor(strain_comp, levels = strain_order_MF),
+         Description = factor(Description, levels = GO_order_MF)) %>%
+  complete(strain_comp, Description)
+
+merged_MF <- merged_MF %>%
+  mutate(NES_dir = ifelse(is.na(NES), FALSE, NES > 0))
+
+
+plot_MF <- ggplot(merged_MF, aes(x = strain_comp, y = Description)) +
+  geom_point(aes(color = as.numeric(p.adjust),
+                 size = ifelse(as.numeric(geneRatio) == 0, NA, as.numeric(geneRatio)))) +
+  scale_color_gradient(name = "p.adjust", limits=c(0,0.05)) +
+  scale_size_continuous(name = "Gene ratio",
+                        limits = c(min(merged_MF$geneRatio, na.rm= TRUE),
+                                   max(merged_MF$geneRatio, na.rm = TRUE)),
+                        breaks = seq(min(merged_MF$geneRatio, na.rm = TRUE),
+                                      max(merged_MF$geneRatio, na.rm = TRUE),
+                                      length.out=5),
+                        labels = label_number(accuracy=0.01)) +
+  scale_y_discrete(limits=rev) +
+  theme_bw() + theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1)) +
+  facet_grid(~NES_dir, scales="free_y", labeller=as_labeller(c(`FALSE`="Downregulated", `TRUE`="Upregulated")))
+
+plot_MF
+```
+
+### Cellular Components
+
+```{r, eval=TRUE}
+#strain_order_CC <- c("K147_pOXA-48-vs-PF_CC", "K147_pVIM-1-vs-PF_CC", "K147_pVIM-1-vs-pOXA-48_CC",
+#                     "K25_pOXA-48-vs-PF_CC", "K25_pVIM-1-vs-PF_CC", "K25_pVIM-1-vs-pOXA-48_CC",
+#                     "KPN06_pOXA-48-vs-PF_CC", "KPN06_pVIM-1-vs-PF_CC", "KPN06_pVIM-1-vs-pOXA-48_CC",
+#                     "K163_pOXA-48-vs-PF_CC", "K163_pVIM-1-vs-PF_CC", "K163_pVIM-1-vs-pOXA-48_CC",
+#                     "K198_pOXA-48-vs-PF_CC", "K198_pVIM-1-vs-PF_CC", "K198_pVIM-1-vs-pOXA-48_CC",
+#                     "K318_pOXA-48-vs-PF_CC", "K318_pVIM-1-vs-PF_CC", "K318_pVIM-1-vs-pOXA-48_CC",
+#                     "KPN11_pOXA-48-vs-PF_CC", "KPN11_pVIM-1-vs-PF_CC", "KPN11_pVIM-1-vs-pOXA-48_CC",
+#                     "KPN12_pOXA-48-vs-PF_CC", "KPN12_pVIM-1-vs-PF_CC", "KPN12_pVIM-1-vs-pOXA-48_CC"
+#                     )
+
+strain_order_CC <- c("K147_pOXA-48-vs-PF_CC", "K25_pOXA-48-vs-PF_CC", "KPN06_pOXA-48-vs-PF_CC", "K163_pOXA-48-vs-PF_CC", "K198_pOXA-48-vs-PF_CC", "K318_pOXA-48-vs-PF_CC", "KPN11_pOXA-48-vs-PF_CC", "KPN12_pOXA-48-vs-PF_CC", 
+                     "K147_pVIM-1-vs-PF_CC", "K25_pVIM-1-vs-PF_CC", "KPN06_pVIM-1-vs-PF_CC", "K163_pVIM-1-vs-PF_CC", "K198_pVIM-1-vs-PF_CC", "K318_pVIM-1-vs-PF_CC", "KPN11_pVIM-1-vs-PF_CC", "KPN12_pVIM-1-vs-PF_CC", 
+                     "K147_pVIM-1-vs-pOXA-48_CC", "K25_pVIM-1-vs-pOXA-48_CC", "KPN06_pVIM-1-vs-pOXA-48_CC", "K163_pVIM-1-vs-pOXA-48_CC", "K198_pVIM-1-vs-pOXA-48_CC", "K318_pVIM-1-vs-pOXA-48_CC", "KPN11_pVIM-1-vs-pOXA-48_CC", "KPN12_pVIM-1-vs-pOXA-48_CC"
+                     )
+
+GO_order_CC <- c("ribosome", "cytosolic large ribosomal subunit", "cytosolic small ribosomal subunit", "cell outer membrane", "membrane", "cell envelope", "endomembrane system", "cytoplasm", "pilus", "ATP-binding cassette (ABC) transporter complex", "ribonucleoprotein complex", "type II protein secretion system complex")
+
+merged_CC <- merged_CC %>%
+  mutate(strain_comp = factor(strain_comp, levels = strain_order_CC),
+         Description = factor(Description, levels = GO_order_CC)) %>%
+  complete(strain_comp, Description)
+
+merged_CC <- merged_CC %>%
+  mutate(NES_dir = ifelse(is.na(NES), FALSE, NES > 0))
+
+
+plot_CC <- ggplot(merged_CC, aes(x = strain_comp, y = Description)) +
+  geom_point(aes(color = as.numeric(p.adjust),
+                 size = ifelse(as.numeric(geneRatio) == 0, NA, as.numeric(geneRatio)))) +
+  scale_color_gradient(name = "p.adjust", limits=c(0,0.05)) +
+  scale_size_continuous(name = "Gene ratio",
+                        limits = c(min(merged_CC$geneRatio, na.rm= TRUE),
+                                   max(merged_CC$geneRatio, na.rm = TRUE)),
+                        breaks = seq(min(merged_CC$geneRatio, na.rm = TRUE),
+                                      max(merged_CC$geneRatio, na.rm = TRUE),
+                                      length.out=5),
+                        labels = label_number(accuracy=0.01)) +
+  scale_y_discrete(limits=rev) +
+  theme_bw() + theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1)) +
+  facet_grid(~NES_dir, scales="free_y", labeller=as_labeller(c(`FALSE`="Downregulated", `TRUE`="Upregulated")))
+
+plot_CC
+```
+
+
+# Exporting the GSEA results
+
+```{r}
+merged_BP <- merged_BP %>% 
+  filter(!is.na(NES))
+merged_MF <- merged_MF %>% 
+  filter(!is.na(NES))
+merged_CC <- merged_CC %>% 
+  filter(!is.na(NES))
+write.table(merged_BP, file="GSEA_chr_BP.tsv", sep="\t", row.names=FALSE)
+write.table(merged_MF, file="GSEA_chr_MF.tsv", sep="\t", row.names=FALSE)
+write.table(merged_CC, file="GSEA_chr_CC.tsv", sep="\t", row.names=FALSE)
+```
+
+
+# Session Info
+
+```{r, eval=TRUE}
+sessionInfo()
+```

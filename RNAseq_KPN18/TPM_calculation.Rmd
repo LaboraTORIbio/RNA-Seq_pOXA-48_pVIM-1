@@ -1,0 +1,123 @@
+---
+title: "TPM calculation"
+author: "Laura Toribio-Celestino"
+date: "May 2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Loading required packages
+
+```{r, results='hide', eval=TRUE, message=FALSE, warning=FALSE}
+library(DESeq2)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(dunn.test)
+```
+
+### Importing the count table and constructing the DESeq2 object
+
+```{r, eval=TRUE}
+# Importing count table
+fc_full <- read.table("featureCounts.tsv", header = TRUE, row.names = 1)
+colnames(fc_full) <- gsub("\\.bam$", "", colnames(fc_full))
+countdata <- fc_full
+# Saving gene lengths and chromosome ids
+gene_length <- countdata$Length
+chr_name <- countdata$Chr
+# Final count tables
+countdata$Length <- NULL
+countdata$Chr <- NULL
+head(countdata)
+tail(countdata)
+```
+
+Building the variables for the columns of the colData object.
+
+```{r, eval=TRUE}
+condition <- c('PF', 'PF', 'PF', 'pOXA', 'pOXA', 'pOXA', 'pVIM', 'pVIM', 'pVIM')
+replicate <- c('1', '2', '3', '1', '2', '3', '1', '2', '3')
+coldata <- as.data.frame(cbind(colnames(countdata), condition, replicate))
+coldata
+```
+
+Constructing the DESeqDataSet object. Samples that do not carry pOXA-48 are removed after constructing the dds objects.
+
+```{r, eval=TRUE}
+plasfreenames <- c("KPN18_PF_1", "KPN18_PF_2", "KPN18_PF_3")
+dds <- DESeqDataSetFromMatrix(countData = countdata, colData = coldata, design = ~ condition)
+dds <- dds[, !colnames(dds) %in% plasfreenames]
+dds
+```
+
+### Calculating FPKM values
+
+```{r, eval=TRUE}
+mcols(dds)$basepairs = gene_length
+fpkm_all <- fpkm(dds)
+head(fpkm_all)
+tail(fpkm_all)
+```
+
+### Calculating TPM values
+
+```{r, eval=TRUE}
+tpm_all <- as.data.frame(apply(fpkm_all, 2, function(x){(x/sum(x))*1E6}))
+tpm_all$Chr <- chr_name
+head(tpm_all)
+tail(tpm_all)
+```
+
+### Violin plots
+
+```{r, eval=TRUE}
+df <- tibble::rownames_to_column(tpm_all, "GeneID")
+
+# Only chromosomal and pOXA-VIM rows are selected
+df <- subset(df, Chr %in% c("1", "pOXA-VIM"))
+df$Chr[df$Chr %in% c("1")] <- "Chromosome"
+# Dataframe is melted for correct representation
+dfmelted <- melt(df, id.vars=c('Chr', 'GeneID'), value.name = 'TPM', variable.name = 'Replicate')
+head(dfmelted)
+tail(dfmelted)
+
+p <- ggplot(dfmelted, aes(Replicate, TPM))
+p + geom_violin(aes(Replicate, TPM, fill=Chr), position=position_dodge(.9)) +
+  xlab(NULL) + ylab("log2 TPM") + scale_y_continuous(trans = "log10") +
+  stat_summary(aes(group=Chr), position=position_dodge(.9), fun = "median", geom = "point", color = "black")
+```
+
+### Some stats
+
+Spearman correlation between pOXA-48-carrying replicates.
+
+```{r, eval=TRUE}
+cor(tpm_all[,1:6], method="spearman")
+```
+
+Kruskal-Wallis test followed by Dunn's test to assess differences between replicates.
+
+```{r, eval=TRUE}
+kruskal.test(TPM ~ Replicate, data = dfmelted)
+dunn.test(dfmelted$TPM, g = dfmelted$Replicate, method = "bh")
+```
+
+### Calculating median TPM values
+
+```{r, eval=TRUE}
+df$median_TPM_pOXA <- apply(df[, 2:4], 1, median) # change replicate columns if necessary
+df$median_TPM_pVIM <- apply(df[, 5:7], 1, median) # change replicate columns if necessary
+head(df)
+tail(df)
+write.table(df, file="TPM_KPN18_chr_pOXA-VIM.tsv", sep="\t", row.names=FALSE)
+```
+
+# Session Info
+
+```{r, eval=TRUE}
+sessionInfo()
+```

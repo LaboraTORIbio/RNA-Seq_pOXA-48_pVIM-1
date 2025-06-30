@@ -1,0 +1,284 @@
+---
+title: 'RNA-Seq: quantification and DE analysis'
+author: "Laura Toribio-Celestino"
+date: "April 2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Loading required packages
+
+```{r, results='hide', eval=TRUE, message=FALSE, warning=FALSE}
+library(Rsubread)
+library(DESeq2)
+library(apeglm)
+library(dplyr)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+library(EnhancedVolcano)
+```
+
+
+
+
+# Quantification with featureCounts
+
+Let's start by reading the sorted BAM files and the annotation SAF file located in this directory.
+
+```{r, eval=TRUE}
+bamfiles <- dir(".", ".bam$")
+saffile <- dir(".", "saf$")
+```
+
+Next, gene-level quantification is performed using featureCounts, which is faster than other methods and requires less computer memory. Strandness was checked before running. Multimapping reads are not counted.
+
+```{r, eval=TRUE}
+fc <- featureCounts(bamfiles, annot.ext=saffile, strandSpecific=2, isPairedEnd=TRUE, nthreads=15)
+```
+
+Count data is exported to a TSV file. Here we'll see some stats of the count data.
+
+```{r, eval=TRUE}
+write.table(x=data.frame(fc$annotation[,c("GeneID","Chr", "Length")], fc$counts, stringsAsFactors=FALSE),
+            file="featureCounts.tsv", quote=FALSE, sep="\t", row.names=FALSE)
+head(fc$counts)
+summary(fc$counts)
+fc$stat
+```
+
+The count matrices are prepared for the construction of the DESeqDataSet object. Gene IDs are set as row names.
+
+```{r, eval=TRUE}
+countdata <- fc$counts
+colnames(countdata) <- gsub("\\.bam$", "", colnames(countdata))
+nrow(countdata)
+```
+
+Plotting the total read counts of each sample.
+
+```{r, eval=TRUE, fig.dim=c(4,4)}
+par(mar=c(8,4,4,1)+0.1)
+barplot(colSums(countdata), las=3, main="Counts")
+```
+
+
+
+
+
+
+# DESeqDataSet object and experimental design
+
+Building the variables for the columns of the colData object. The condition of all samples and replicates is specified.
+
+```{r, eval=TRUE}
+condition <- c('PF', 'PF', 'pOXA', 'pOXA', 'pOXA', 'pVIM', 'pVIM', 'pVIM')
+replicate <- c('2', '3', '1', '2', '3', '1', '2', '3')
+coldata <- as.data.frame(cbind(colnames(countdata), condition, replicate))
+coldata
+```
+
+Constructing the DESeqDataSet object.
+
+```{r, eval=TRUE}
+dds <- DESeqDataSetFromMatrix(countData = countdata, colData = coldata, design = ~ condition)
+head(dds)
+nrow(dds)
+```
+
+Pre-filtering the dataset: Rows with 0 counts will be removed to increase the speed of the DESeq2 pipeline. Additional weighting/filtering to improve power is applied at a later step in the DESeq2 workflow.
+
+```{r, eval=TRUE, class.source="bg-success"}
+keep <- rowSums(counts(dds)) > 1
+dds <- dds[keep,]
+nrow(dds)
+```
+
+As there are three conditions, multiple comparisons are required. Thus, the dds object is duplicated to assign different reference levels to each. For dds1, the reference will be defined as the pOXA-48/pVIM-1-free version of the strain. For the comparison pVIM-1 vs pOXA-48, dds2 is releveled using the strain carrying pOXA-48 as reference.
+
+```{r, eval=TRUE}
+dds1 <- dds
+dds2 <- dds
+dds1$condition <- relevel(dds1$condition, ref = "PF")
+dds2$condition <- relevel(dds2$condition, ref = "pOXA")
+```
+
+
+
+
+
+
+# Analysis of count data
+
+Before exploratory analyses, count data is transformed to stabilize the variance across the mean. The rlog transformation is applied since it works best on small datasets (n<30), in comparison with the VST method.
+
+```{r, eval=TRUE}
+rld <- rlog(dds1, blind = FALSE)
+head(assay(rld))
+```
+
+
+### Heatmap of distances between samples
+
+To observe the similarities and dissimilarities between samples, we plot a heatmap of Euclidean distances. Replicates from each condition should cluster together.
+
+```{r, eval=TRUE, fig.dim=c(5,4)}
+sampleDists <- dist(t(assay(rld)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(rld$condition, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors,
+         main="Heatmap of Euclidean distances")
+```
+
+
+### PCA plot
+
+In PCA plots, samples are projected onto the 2D plane such that they spread out in the two directions that explain most of the differences between them. The x-axis (PC1) is the direction that separates the data points the most. The y-axis (PC2) is the direction that separates the data the second most. The percent of the total variance that is contained in the direction is printed in the axis label. Replicates from each condition should cluster together.
+
+```{r, eval=TRUE, fig.dim=c(5,4)}
+pcaData <- plotPCA(rld, intgroup = c("condition", "replicate"), returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(x = PC1, y = PC2, color = condition, shape = replicate)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  theme_bw()
+```
+
+
+
+
+
+
+## Differential expression analysis
+
+As we have already specified an experimental design when we created the DESeqDataSet, we can run the differential expression pipeline on the raw counts:
+
+```{r, eval=TRUE}
+dds1 <- DESeq(dds1)
+resultsNames(dds1)
+dds2 <- DESeq(dds2)
+resultsNames(dds2)
+```
+
+We'll have a look at the summary of the unfiltered DE results. The LFC is shrunken with the apeglm method for visualizing results and ranking the genes for GSEA analysis.
+
+```{r, eval=TRUE, class.source="bg-success"}
+res_pOXA_PF <- lfcShrink(dds1, coef="condition_pOXA_vs_PF", type="apeglm")
+summary(res_pOXA_PF)
+res_pVIM_PF <- lfcShrink(dds1, coef="condition_pVIM_vs_PF", type="apeglm")
+summary(res_pVIM_PF)
+res_pVIM_pOXA <- lfcShrink(dds2, coef="condition_pVIM_vs_pOXA", type="apeglm")
+summary(res_pVIM_pOXA)
+```
+
+The unfiltered DE results are exported to a TSV file (contains NAs and non-significant DEGs).
+
+```{r, eval=TRUE}
+## The saf file, which contains the UniRef IDs is read
+saftable <- read.csv(saffile, header=TRUE, sep="\t")
+saftable <- as.data.frame(saftable)
+
+## Merge with normalized count data and annotation
+resdata_pOXA_PF <- merge(as.data.frame(res_pOXA_PF), as.data.frame(counts(dds1, normalized=TRUE)), by="row.names", sort=FALSE)
+names(resdata_pOXA_PF)[1] <- "GeneID"
+resdata_pOXA_PF <- merge(x=as.data.frame(resdata_pOXA_PF), saftable, by="GeneID")
+
+resdata_pVIM_PF <- merge(as.data.frame(res_pVIM_PF), as.data.frame(counts(dds1, normalized=TRUE)), by="row.names", sort=FALSE)
+names(resdata_pVIM_PF)[1] <- "GeneID"
+resdata_pVIM_PF <- merge(x=as.data.frame(resdata_pVIM_PF), saftable, by="GeneID")
+
+resdata_pVIM_pOXA <- merge(as.data.frame(res_pVIM_pOXA), as.data.frame(counts(dds2, normalized=TRUE)), by="row.names", sort=FALSE)
+names(resdata_pVIM_pOXA)[1] <- "GeneID"
+resdata_pVIM_pOXA <- merge(x=as.data.frame(resdata_pVIM_pOXA), saftable, by="GeneID")
+
+## Write results
+write.table(resdata_pOXA_PF, file="DE_results_pOXA-48-vs-PF_raw.tsv", sep="\t", row.names=FALSE)
+write.table(resdata_pVIM_PF, file="DE_results_pVIM-1-vs-PF_raw.tsv", sep="\t", row.names=FALSE)
+write.table(resdata_pVIM_pOXA, file="DE_results_pVIM-1-vs-pOXA-48_raw.tsv", sep="\t", row.names=FALSE)
+```
+
+Lowering the FDR threshold on padj (Benjamini-Hochberg adjusted p-values).
+
+```{r, eval=TRUE, class.source="bg-success"}
+resfilt_pOXA_PF <- results(dds1, alpha = 0.05, contrast=c("condition", "pOXA", "PF"))
+summary(resfilt_pOXA_PF)
+resfilt_pVIM_PF <- results(dds1, alpha = 0.05, contrast=c("condition", "pVIM", "PF"))
+summary(resfilt_pVIM_PF)
+resfilt_pVIM_pOXA <- results(dds2, alpha = 0.05, contrast=c("condition", "pVIM", "pOXA"))
+summary(resfilt_pVIM_pOXA)
+```
+
+Exporting the filtered DE results to a CSV file.
+
+```{r, eval=TRUE}
+## Creating a results data frame filtered by padj and LFC
+resFilt_pOXA_PF <- subset(resfilt_pOXA_PF, padj < 0.05)
+resFilt_pVIM_PF <- subset(resfilt_pVIM_PF, padj < 0.05)
+resFilt_pVIM_pOXA <- subset(resfilt_pVIM_pOXA, padj < 0.05)
+
+## Merge with normalized count data and annotation
+resdatafilt_pOXA_PF <- merge(as.data.frame(resFilt_pOXA_PF), as.data.frame(counts(dds1, normalized=TRUE)), by="row.names", sort=FALSE)
+names(resdatafilt_pOXA_PF)[1] <- "GeneID"
+resdatafilt_pOXA_PF <- merge(x=as.data.frame(resdatafilt_pOXA_PF), saftable, by="GeneID")
+
+resdatafilt_pVIM_PF <- merge(as.data.frame(resFilt_pVIM_PF), as.data.frame(counts(dds1, normalized=TRUE)), by="row.names", sort=FALSE)
+names(resdatafilt_pVIM_PF)[1] <- "GeneID"
+resdatafilt_pVIM_PF <- merge(x=as.data.frame(resdatafilt_pVIM_PF), saftable, by="GeneID")
+
+resdatafilt_pVIM_pOXA <- merge(as.data.frame(resFilt_pVIM_pOXA), as.data.frame(counts(dds2, normalized=TRUE)), by="row.names", sort=FALSE)
+names(resdatafilt_pVIM_pOXA)[1] <- "GeneID"
+resdatafilt_pVIM_pOXA <- merge(x=as.data.frame(resdatafilt_pVIM_pOXA), saftable, by="GeneID")
+
+## Order by log2FC
+resdatafilt_pOXA_PF <- resdatafilt_pOXA_PF[order(resdatafilt_pOXA_PF$log2FoldChange, decreasing = TRUE), ]
+resdatafilt_pVIM_PF <- resdatafilt_pVIM_PF[order(resdatafilt_pVIM_PF$log2FoldChange, decreasing = TRUE), ]
+resdatafilt_pVIM_pOXA <- resdatafilt_pVIM_pOXA[order(resdatafilt_pVIM_pOXA$log2FoldChange, decreasing = TRUE), ]
+
+## Write results
+write.table(resdatafilt_pOXA_PF, file="DE_results_pOXA-48-vs-PF_filtered_padj.tsv", sep="\t", row.names=FALSE)
+write.table(resdatafilt_pVIM_PF, file="DE_results_pVIM-1-vs-PF_filtered_padj.tsv", sep="\t", row.names=FALSE)
+write.table(resdatafilt_pVIM_pOXA, file="DE_results_pVIM-1-vs-pOXA-48_filtered_padj.tsv", sep="\t", row.names=FALSE)
+```
+
+
+
+
+### MA plot
+
+MA plots show the log2 fold changes in gene expression over the mean of normalized counts for all the samples. Blue points indicate the adjusted P value is less than 0.05. Points which fall out of the window are plotted as open triangles pointing either up or down.
+
+```{r, eval=TRUE, fig.dim=c(5,4)}
+DESeq2::plotMA(res_pOXA_PF, ylim=c(-5,5), main="MA plot pOXA-48 vs plasmid-free")
+DESeq2::plotMA(res_pVIM_PF, ylim=c(-5,5), main="MA plot pVIM-1 vs plasmid-free")
+DESeq2::plotMA(res_pVIM_pOXA, ylim=c(-5,5), main="MA plot pVIM-1 vs pOXA-48")
+```
+
+
+### Volcano plot
+
+The volcano plot arranges genes along two dimensions: the x-axis is the log fold change between the two groups, and the y-axis represents the adjusted P values between samples (on a negative log scale so smaller p-values appear higher up). 
+
+```{r, eval=TRUE, fig.dim=c(8,9.5), warning=FALSE}
+EnhancedVolcano(res_pOXA_PF, lab = rownames(res_pOXA_PF), x = 'log2FoldChange', y = 'padj', pCutoff=0.05, FCcutoff=0, subtitleLabSize=0, axisLabSize=10, labSize=3, legendLabSize=10, legendIconSize=3, col=c('black', 'black', 'gold2', 'blue'), colAlpha = 0.3, drawConnectors = TRUE, title="pOXA-48 vs plasmid-free")
+EnhancedVolcano(res_pVIM_PF, lab = rownames(res_pVIM_PF), x = 'log2FoldChange', y = 'padj', pCutoff=0.05, FCcutoff=0, subtitleLabSize=0, axisLabSize=10, labSize=3, legendLabSize=10, legendIconSize=3, col=c('black', 'black', 'gold2', 'blue'), colAlpha = 0.3, drawConnectors = TRUE, title="pVIM-1 vs plasmid-free")
+EnhancedVolcano(res_pVIM_pOXA, lab = rownames(res_pVIM_pOXA), x = 'log2FoldChange', y = 'padj', pCutoff=0.05, FCcutoff=0, subtitleLabSize=0, axisLabSize=10, labSize=3, legendLabSize=10, legendIconSize=3, col=c('black', 'black', 'gold2', 'blue'), colAlpha = 0.3, drawConnectors = TRUE, title="pVIM-1 vs pOXA-48")
+```
+
+
+
+
+# Session Info
+
+```{r, eval=TRUE}
+sessionInfo()
+```

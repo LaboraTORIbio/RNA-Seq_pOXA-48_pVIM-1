@@ -1,0 +1,314 @@
+---
+title: "TPM calculation"
+author: "Laura Toribio-Celestino"
+date: "May 2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Loading required packages
+
+```{r, results='hide', eval=TRUE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(ggrepel)
+```
+
+
+## Importing the TPM tables and assessing normalization approaches
+
+Following files include TPM values of chromosomal and pOXA-VIM genes (other plasmid's genes were filtered out after TPM calculation in each strain's R project), for each replicate, and the median TPM values between replicates.
+
+```{r, eval=TRUE}
+files <- list.files(pattern = "*_chr_pOXA-VIM.tsv")
+
+dfs <- lapply(files, function(f) read.table(f, header = TRUE))
+names(dfs) <- files
+```
+
+Calculating the median TPM values of chromosomal expression across replicates and strains and coefficient of variance:
+
+```{r, eval=TRUE}
+# Collect medians
+medianschr <- c()
+for (df in dfs) {
+  for (col in 2:7) {
+    medianschr <- c(medianschr, median(df[df$Chr == "Chromosome", col]))
+  }
+}
+
+# Coefficient of variance
+sd(medianschr) / mean(medianschr)
+```
+
+Calculating the coefficient of variance of the rpoB, dnaE and recA housekeeping genes across samples:
+
+```{r, eval=TRUE}
+rpoB_ids <- c("FCMADI_23910", "GIDKOH_00780", "NEHMFL_24495", "GGNJBF_18950", "ANKJHK_24760", "ENCFHI_24765", "DFHBBD_24905", "DLGPIE_20345", "MEIGEM_24175", "KGBCLL_25170")
+dnaE_ids <- c("FCMADI_20365", "GIDKOH_24225", "NEHMFL_20840", "GGNJBF_15300", "ANKJHK_21215", "ENCFHI_21110", "DFHBBD_21365", "DLGPIE_24015", "MEIGEM_20520", "KGBCLL_21220")
+recA_ids <- c("FCMADI_05760", "GIDKOH_07855", "NEHMFL_05500", "GGNJBF_25745", "ANKJHK_05795", "ENCFHI_05495", "DFHBBD_05820", "DLGPIE_13540", "MEIGEM_05510", "KGBCLL_05845")
+
+# Collect TPMs
+rpoB_tpm <- c()
+dnaE_tpm <- c()
+recA_tpm <- c()
+
+for (i in seq_along(dfs)) {
+  df <- dfs[[i]]
+  rpoB_id <- rpoB_ids[[i]]
+  dnaE_id <- dnaE_ids[[i]]
+  recA_id <- recA_ids[[i]]
+  for (col in 2:7) {
+    rpoB_tpm <- c(rpoB_tpm, df[df$GeneID == rpoB_id, col])
+    dnaE_tpm <- c(dnaE_tpm, df[df$GeneID == dnaE_id, col])
+    recA_tpm <- c(recA_tpm, df[df$GeneID == recA_id, col])
+  }
+}
+
+# Coefficient of variance
+sd(rpoB_tpm)/mean(rpoB_tpm)
+sd(dnaE_tpm)/mean(dnaE_tpm)
+sd(recA_tpm)/mean(recA_tpm)
+```
+
+The coefficient of variance is lowest when using the rpoB TPM values. However, as these values are high (rpoB is highly expressed), they could hamper the visualization of the expression of plasmid genes after normalization. Therefore, we are going to use the median chromosomal TPM values for normalization, as it also shows low coefficient of variance.
+
+
+
+
+## Annotations
+
+Gene names for pOXA-VIM:
+
+```{r, eval=TRUE}
+pOXAVIM_genes <- c("repA", "agrB", "dqlB", "trbC", "trbB", "trbA", "trbN", "DUF1496 domain-containing protein", "tir (1/2)", "Tn1999-1.1", "IS1-1", "Tn1999-1.2", "RNA-OUT-1", "blaOXA-48", "lysR", "RNA-OUT-2", "Tn1999-2", "tir (2/2)", "pemI", "pemK", "ltrA", "umuD", "umuC", "Prophage protein", "tgtA5", "Helix-turn-helix transcriptional regulator", "relB", "ORF10", "hypothetical protein 1", "ORF11", "HNH endonuclease 1", "Asparaginyl-tRNA synthetase", "HTH cro/C1-type domain-containing protein", "mrr", "Lipoprotein 1", "hypothetical protein 2", "xerD-1", "parA", "parB", "cls", "Sugar ABC transporter substrate-binding protein", "korC", "Lipoprotein 2", "ORF23", "DUF3085 domain-containing protein", "hypothetical protein 3", "radC", "XRE family transcriptional regulator", "DGQHR domain-containing protein 1", "IS1-2", "insB", "catA1", "hypothetical protein 4", "tnp", "Transposase 1", "msrE", "mphE", "Transposase 2", "xerD-2", "blaVIM-1", "aac(6')-Ib", "aadA1", "catB2", "qacEdelta1", "sul1", "hypothetical protein 5", "hypothetical protein 6", "istB", "Mobile element protein", "Transposase 3", "DGQHR domain-containing protein 2", "cbiX", "DUF4942 domain-containing protein", "hypothetical protein 7", "yagA", "rmoA", "Holin", "Antirestriction protein", "DUF1380 domain-containing protein", "hicB", "klcA", "hypothetical protein 8", "hypothetical protein 9", "ssb", "ORF37", "hypothetical protein 10", "hypothetical protein 11", "mobC", "mobA", "TraI/MobA(P) family conjugative relaxase", "traH", "traI", "traJ", "traK", "traC", "traL", "Haemolysin expression modulating protein", "H-NS", "traM", "traN", "traO", "traP", "traQ", "traR", "HNH endonuclease 2", "traU", "traW", "traX-like", "traY", "excA", "repC")
+```
+
+Functional annotation:
+
+```{r, eval=TRUE}
+func_annot <-c(rep("Maintenance", 3), rep("Conjugation", 4), "Unknown", "Conjugation", rep("Insertion sequences", 3), "Other functions", "Antibiotic resistance", rep("Other functions", 2), "Insertion sequences", "Conjugation", rep("Maintenance", 2), rep("Other functions", 3), rep("Unknown", 2), rep("Other functions", 2), rep("Unknown", 3), rep("Other functions", 2), "Unknown", rep("Other functions", 2), "Unknown", rep("Maintenance", 3), rep("Other functions", 4), rep("Unknown", 3), rep("Other functions", 2), "Unknown", rep("Insertion sequences", 2), "Antibiotic resistance", "Unknown", rep("Insertion sequences", 2), rep("Antibiotic resistance", 2), rep("Insertion sequences", 2), rep("Antibiotic resistance", 6), rep("Unknown", 2), rep("Insertion sequences", 3), "Unknown", "Other functions", rep("Unknown", 2), rep("Other functions", 4), "Unknown", rep("Other functions", 2), rep("Unknown", 2), "Maintenance", rep("Unknown", 3), rep("Conjugation", 9), rep("Other functions", 2), rep("Conjugation", 6), "Other functions", rep("Conjugation", 4), "Other functions", "Maintenance")
+```
+
+
+
+## Working with unnormalized data
+
+#### Violin plots of chromosome vs pOXA-48/pVIM-1 median log10TPM values
+
+```{r, eval=TRUE}
+# Add strain column and subset Strain, Chr, GeneID and median TPM columns
+strain_names <- c("K147", "K153", "K163", "K198", "K25", "K318", "KPN06", "KPN11", "KPN12", "KPN18")
+dfs_sub <- vector("list", length(dfs))
+
+for (i in seq_along(dfs)) {
+  df <- dfs[[i]]
+  df$Strain <- strain_names[[i]]
+  df <- df[c("Strain", "Chr", "GeneID", "median_TPM_pOXA", "median_TPM_pVIM")]
+  dfs_sub[[i]] <- df
+}
+names(dfs_sub) <- names(dfs)
+combined_df <- do.call(rbind, dfs_sub)
+combined_df <- combined_df[combined_df$median_TPM_pOXA > 0, ]
+combined_df <- combined_df[combined_df$median_TPM_pVIM > 0, ]
+```
+
+```{r, eval=TRUE}
+strain_order <- c("K147", "K25", "K153", "KPN06", "KPN18", "K163", "K198", "K318", "KPN11", "KPN12")
+combined_df$Strain <- factor(combined_df$Strain, levels=strain_order)
+
+violin_plot_pOXA <- ggplot(combined_df, aes(Strain, median_TPM_pOXA)) +
+  geom_violin(aes(Strain, median_TPM_pOXA, fill=Chr), position=position_dodge(.9)) +
+  xlab(NULL) + ylab("log10TPM") + scale_y_continuous(trans = "log10") +
+  stat_summary(aes(group=Chr), position=position_dodge(.9), fun = "median", geom = "point", color = "black") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + theme_bw() +
+  labs(title="TPM values in strains carrying pOXA-48")
+
+violin_plot_pVIM <- ggplot(combined_df, aes(Strain, median_TPM_pVIM)) +
+  geom_violin(aes(Strain, median_TPM_pVIM, fill=Chr), position=position_dodge(.9)) +
+  xlab(NULL) + ylab("log10TPM") + scale_y_continuous(trans = "log10") +
+  stat_summary(aes(group=Chr), position=position_dodge(.9), fun = "median", geom = "point", color = "black") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + theme_bw() +
+  labs(title="TPM values in strains carrying pVIM-1")
+
+violin_plot_pOXA
+violin_plot_pVIM
+```
+
+#### Some interesting TPM values
+
+```{r, eval=TRUE}
+cat("Stats of the median chromosomal TPM values across replicates:\n")
+summary(medianschr)
+cat("\nStats of the median pOXA-VIM TPM values across replicates:\n")
+summary(combined_df[combined_df$Chr == "pOXA-VIM", "median_TPM_pOXA"])
+cat("\nStats of TPM values of umuD across pOXA-48-carrying replicates:\n")
+summary(combined_df[combined_df$Chr == "pOXA-VIM" & combined_df$GeneID == "pOXA-VIM_00115", "median_TPM_pOXA"])
+cat("\nStats of TPM values of umuD across pVIM-1-carrying replicates:\n")
+summary(combined_df[combined_df$Chr == "pOXA-VIM" & combined_df$GeneID == "pOXA-VIM_00115", "median_TPM_pVIM"])
+cat("\nStats of TPM values of umuC across pOXA-48-carrying replicates:\n")
+summary(combined_df[combined_df$Chr == "pOXA-VIM" & combined_df$GeneID == "pOXA-VIM_00120", "median_TPM_pOXA"])
+cat("\nStats of TPM values of umuC across pVIM-1-carrying replicates:\n")
+summary(combined_df[combined_df$Chr == "pOXA-VIM" & combined_df$GeneID == "pOXA-VIM_00120", "median_TPM_pVIM"])
+cat("\nStats of TPM values of agrB across pOXA-48-carrying replicates:\n")
+summary(combined_df[combined_df$Chr == "pOXA-VIM" & combined_df$GeneID == "pOXA-VIM_00009", "median_TPM_pOXA"])
+cat("\nStats of TPM values of agrB across pVIM-1-carrying replicates:\n")
+summary(combined_df[combined_df$Chr == "pOXA-VIM" & combined_df$GeneID == "pOXA-VIM_00009", "median_TPM_pVIM"])
+cat("\nStats of TPM values of dqlB across pOXA-48-carrying replicates:\n")
+summary(combined_df[combined_df$Chr == "pOXA-VIM" & combined_df$GeneID == "pOXA-VIM_00010", "median_TPM_pOXA"])
+cat("\nStats of TPM values of dqlB across pVIM-1-carrying replicates:\n")
+summary(combined_df[combined_df$Chr == "pOXA-VIM" & combined_df$GeneID == "pOXA-VIM_00010", "median_TPM_pVIM"])
+```
+
+
+
+
+## Normalizing pOXA-VIM TPM values by median chromosomal expression
+
+The TPM values of pOXA-VIM genes for each replicate will be normalized by the median chromosomal TPM value of the corresponding replicate. Then, the median TPM value between pOXA-48- and pVIM-1-carrying replicates will be calculated, separately:
+
+```{r, eval=TRUE}
+strain_names <- c("K147", "K153", "K163", "K198", "K25", "K318", "KPN06", "KPN11", "KPN12", "KPN18")
+dfs_norm <- vector("list", length(dfs))
+
+for (i in seq_along(dfs)) {
+  df <- dfs[[i]]
+  df$Strain <- strain_names[[i]]
+  df_pOXAVIM <- df[df$Chr == "pOXA-VIM", ]
+  df_norm <- df_pOXAVIM  # empty df to store pOXA-VIM normalized values
+
+  for (col in 2:7) {
+    col_name <- colnames(df)[col]
+    median_chr_tpm <- median(df[df$Chr == "Chromosome", col])
+    df_norm[[col_name]] <- df_pOXAVIM[[col_name]] / median_chr_tpm  # normalization
+  }
+  
+  # median TPM per plasmid
+  df_norm$median_TPM_pOXA <- apply(df_norm[, 2:4], 1, median)
+  df_norm$median_TPM_pVIM <- apply(df_norm[, 5:7], 1, median)
+  df_norm <- df_norm[c("Strain", "Chr", "GeneID", "median_TPM_pOXA", "median_TPM_pVIM")]
+  df_norm$Gene_name <- pOXAVIM_genes
+  df_norm$Function <- func_annot
+  
+  dfs_norm[[i]] <- df_norm
+}
+```
+
+Preparing data for plotting:
+
+```{r, eval=TRUE}
+# Combine and pivot dataframes
+combined_df_norm <- do.call(rbind, dfs_norm)
+
+long_df_norm <- combined_df_norm %>%
+  pivot_longer(
+    cols = c(median_TPM_pOXA, median_TPM_pVIM),
+    names_to = "TPM_Type",
+    values_to = "median_TPM"
+  ) %>%
+  mutate(
+    Strain = paste0(Strain, ifelse(TPM_Type == "median_TPM_pOXA", "_pOXA-48", "_pVIM-1"))
+  ) %>%
+  select(Strain, Chr, GeneID, Gene_name, Function, median_TPM)
+
+library(dplyr)
+
+# Assinging NAs to genes not present in either plasmid
+genes_K153 <- c("IS1-1", "Tn1999-1.2")
+genes_not_in_pVIM <- c("ltrA", "Tn1999-1.1", "IS1-1", "Tn1999-1.2", "RNA-OUT-1", 
+                 "blaOXA-48", "lysR", "RNA-OUT-2", "Tn1999-2")
+genes_not_in_pOXA <- c("catA1", "hypothetical protein 4", "tnp", "Transposase 1", 
+                  "msrE", "mphE", "Transposase 2", "xerD-2", "blaVIM-1", 
+                  "aac(6')-Ib", "aadA1", "catB2", "qacEdelta1", "sul1", 
+                  "hypothetical protein 5", "hypothetical protein 6", 
+                  "istB", "Mobile element protein", "Transposase 3")
+
+long_df_norm <- long_df_norm %>%
+  mutate(
+    median_TPM = case_when(
+    Strain == "K153_pOXA-48" & Gene_name %in% genes_K153 ~ NA_real_,
+    str_detect(Strain, "_pVIM-1") & Gene_name %in% genes_not_in_pVIM ~ NA_real_,
+    str_detect(Strain, "_pOXA-48") & Gene_name %in% genes_not_in_pOXA ~ NA_real_,
+    TRUE ~ median_TPM
+    )
+  )
+```
+
+
+#### Box plots of pOXA-VIM median log10TPM values normalized by median chromosomal expression
+
+```{r, eval=TRUE}
+strain_order1 <- c("K147_pOXA-48", "K147_pVIM-1", "K153_pOXA-48", "K153_pVIM-1", "K25_pOXA-48", "K25_pVIM-1", "KPN06_pOXA-48", "KPN06_pVIM-1", "KPN18_pOXA-48", "KPN18_pVIM-1",
+                  "K163_pOXA-48", "K163_pVIM-1", "K198_pOXA-48", "K198_pVIM-1", "K318_pOXA-48", "K318_pVIM-1", "KPN11_pOXA-48", "KPN11_pVIM-1", "KPN12_pOXA-48", "KPN12_pVIM-1")
+long_df_norm$Strain <- factor(long_df_norm$Strain, levels=strain_order1)
+
+
+plas_boxplot <- ggplot(long_df_norm, aes(Strain, median_TPM)) +
+  geom_boxplot(notch = TRUE, outlier.shape = NA, width = 0.4) +
+  geom_jitter(
+    alpha = 0.7,
+    position = position_jitter(seed = 5, width = 0.25),
+    aes(color = Function)
+  ) +
+  geom_text_repel(
+    data = subset(long_df_norm, Gene_name %in% c("umuD", "umuC", "blaOXA-48", "blaVIM-1", "catA1")),
+    aes(label = Gene_name),
+    size = 3,
+    color = "black",
+    max.overlaps = 3,
+    force_pull = 10
+  ) +
+  scale_color_manual(
+    breaks = c("Antibiotic resistance", "Conjugation", "Maintenance", "Insertion sequences", "Other functions", "Unknown"),
+    values = c("red3", "darkolivegreen3", "lightcoral", "gold2", "steelblue2", "gray")
+  ) +
+  scale_y_continuous(trans = "log10") +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "gray30") +
+  labs(x = NULL, y = "log10TPM") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 11, angle = 45, hjust = 1))
+
+plas_boxplot
+```
+
+
+#### Heatmap of pOXA-VIM normalized TPM values normalized by median chromosomal expression
+
+```{r, eval=TRUE}
+strain_order2 <- c(
+  "KPN12_pVIM-1", "KPN11_pVIM-1", "K318_pVIM-1", "K198_pVIM-1", "K163_pVIM-1",
+  "KPN18_pVIM-1", "KPN06_pVIM-1", "K25_pVIM-1", "K153_pVIM-1", "K147_pVIM-1",
+  "KPN12_pOXA-48", "KPN11_pOXA-48", "K318_pOXA-48", "K198_pOXA-48", "K163_pOXA-48",
+  "KPN18_pOXA-48", "KPN06_pOXA-48", "K25_pOXA-48", "K153_pOXA-48", "K147_pOXA-48"
+)
+
+long_df_norm$Strain <- factor(long_df_norm$Strain, levels=strain_order2)
+long_df_norm$Gene_name <- factor(long_df_norm$Gene_name, levels=pOXAVIM_genes)
+long_df_norm$median_TPM_log <- log2(long_df_norm$median_TPM)
+
+plas_heatmap <- ggplot(long_df_norm, aes(Gene_name, Strain, fill=median_TPM_log)) + geom_tile() + coord_fixed() +
+  theme(axis.text.x = element_text(size=11, angle=45, hjust=1), axis.text.y = element_text(size=11)) +
+  scale_fill_gradient2(low = "mediumpurple2",
+                      mid = "cadetblue3",
+                      high = "gold1")
+plas_heatmap
+```
+
+
+## Export table
+
+```{r, eval=TRUE}
+write.table(long_df_norm, file = "pOXA-48_pVIM-1_normalized_TPM.tsv" , quote=FALSE, sep='\t', row.names = FALSE)
+```
+
+
+# Session Info
+
+```{r, eval=TRUE}
+sessionInfo()
+```
