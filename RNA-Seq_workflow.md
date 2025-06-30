@@ -876,9 +876,9 @@ do
 done
 ```
 
-At this point, everything was set to run GSEA with **clusterProfiler v4.10.1**, correcting for multiple tests with the Benjamini-Hochberg procedure. The pipeline is in the R script **GSEA.Rmd**, located in `./GSEA`. For plotting, GO terms were grouped by parental terms based on the observation of GO trees in QuickGO (April 2025). Check the HTML-formatted output [here](https://laboratoribio.github.io/RNA-Seq_pOXA-48-pVIM-1/GSEA/TPM_calculation.html).
+At this point, everything was set to run GSEA with **clusterProfiler v4.10.1**, correcting for multiple tests with the Benjamini-Hochberg procedure. The pipeline is in the R script **GSEA.Rmd**, located in `./GSEA`. For plotting, GO terms were grouped by parental terms based on the observation of GO trees in QuickGO (April 2025). Check the HTML-formatted output [here](https://laboratoribio.github.io/RNA-Seq_pOXA-48_pVIM-1/GSEA/GSEA.html).
 
 
 ## Transcripts Per Million (TPM)
 
-In each strain's *RNAseq_* directory, the Rmd script **TPM_calculation.Rmd** calculates the TPM values of pOXA-48/pVIM-1-carrying strains from FPKM values computed with DESeq2 from raw counts. Then, the script **TPM_calculation.Rmd** inside the directory `./plot_TPM` imports the previously generated TPM values (copied to `./plot_TPM`), normalizes them by median chromosomal TPM and plots a heatmap of pOXA-48/pVIM-1 gene expression. Check the HTML-formatted output [here](https://laboratoribio.github.io/RNA-Seq_pOXA-48-pVIM-1/plot_TPM/TPM_calculation.html).
+In each strain's *RNAseq_* directory, the Rmd script **TPM_calculation.Rmd** calculates the TPM values of pOXA-48/pVIM-1-carrying strains from FPKM values computed with DESeq2 from raw counts. Then, the script **TPM_calculation.Rmd** inside the directory `./plot_TPM` imports the previously generated TPM values (copied to `./plot_TPM`), normalizes them by median chromosomal TPM and plots a heatmap of pOXA-48/pVIM-1 gene expression. Check the HTML-formatted output [here](https://laboratoribio.github.io/RNA-Seq_pOXA-48_pVIM-1/plot_TPM/TPM_calculation.html).
